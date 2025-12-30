@@ -5,113 +5,128 @@ const ffmpeg = require("fluent-ffmpeg");
 const ffmpegStatic = require("ffmpeg-static");
 const sharp = require("sharp");
 const fs = require("fs");
-const path = require("path");
 
 const app = express();
 app.use(cors());
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
+// config
+
 const IMAGE_FORMATS = ["jpeg", "png", "webp", "avif", "ico"];
-const VIDEO_FORMATS = ["mp4", "mov", "webm", "gif"];
+const VIDEO_FORMATS = ["mp4", "mov", "gif"];
 
 const upload = multer({
   dest: "uploads/",
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  limits: { fileSize: 40 * 1024 * 1024 },
 });
 
-if (!fs.existsSync("output")) {
-  fs.mkdirSync("output");
-}
+if (!fs.existsSync("output")) fs.mkdirSync("output");
 
-const safeUnlink = (filePath) => {
+// helpers
+
+const safeUnlink = (file) => {
   try {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch (err) {
-    console.error("Cleanup error:", err.message);
-  }
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  } catch { }
 };
 
-const sendAndCleanup = (res, inputPath, outputPath) => {
-  res.download(outputPath, () => {
-    safeUnlink(inputPath);
-    safeUnlink(outputPath);
+const sendAndCleanup = (res, input, output) => {
+  res.download(output, () => {
+    safeUnlink(input);
+    safeUnlink(output);
   });
 };
 
+// video-coverts
 
-// video conversion
-const VIDEO_FORMAT_CONFIG = {
-  gif: {
-    format: "gif",
-    options: ["-vf fps=10,scale=480:-1"],
-    audio: false,
-  },
-  webm: {
-    format: "webm",
-    options: ["-c:v libvpx-vp9", "-crf 30", "-b:v 0"],
-    audio: false,
-  },
+const VIDEO_CONVERT = {
   mp4: {
     format: "mp4",
-    options: ["-c:v libx264", "-preset veryfast"],
+    options: ["-c:v libx264", "-preset ultrafast", "-movflags +faststart"],
     audio: true,
   },
   mov: {
     format: "mov",
-    options: ["-c:v libx264", "-preset veryfast"],
+    options: ["-c:v libx264", "-preset ultrafast"],
     audio: true,
+  },
+  gif: {
+    format: "gif",
+    options: ["-vf fps=6,scale=320:-1"],
+    audio: false,
   },
 };
 
 app.post("/convert-video", upload.single("file"), (req, res) => {
-  // Validate file upload
-  if (!req.file) {
-    return res.status(400).send("No file uploaded");
-  }
+  if (!req.file) return res.status(400).send("No file uploaded");
 
   const inputPath = req.file.path;
   const { format = "mp4" } = req.body;
 
-  const config = VIDEO_FORMAT_CONFIG[format];
+  const config = VIDEO_CONVERT[format];
   if (!config) {
     safeUnlink(inputPath);
     return res.status(400).send("Unsupported video format");
   }
 
-  const outputPath = `output/${Date.now()}.${format}`;
+  const outputPath = `output/${ Date.now() }.${ format }`;
 
-  try {
-    let command = ffmpeg(inputPath);
+  let cmd = ffmpeg(inputPath).outputOptions(config.options);
 
-    // Add output options
-    config.options.forEach(option => {
-      command = command.addOutputOption(option);
-    });
+  if (!config.audio) cmd = cmd.noAudio();
 
-    if (!config.audio) {
-      command = command.noAudio();
-    }
-
-    command
-      .toFormat(config.format)
-      .on("end", () => sendAndCleanup(res, inputPath, outputPath))
-      .on("error", (err) => {
-        console.error("Video conversion error:", err.message);
-        safeUnlink(inputPath);
-        safeUnlink(outputPath);
-        res.status(500).send("Video conversion failed");
-      })
-      .save(outputPath);
-  } catch (err) {
-    console.error("Video conversion error:", err.message);
-    safeUnlink(inputPath);
-    res.status(500).send("Video conversion failed");
-  }
+  cmd
+    .on("start", (c) => console.log("FFmpeg:", c))
+    .toFormat(config.format)
+    .on("end", () => sendAndCleanup(res, inputPath, outputPath))
+    .on("error", (err) => {
+      console.error("Video convert error:", err.message);
+      safeUnlink(inputPath);
+      safeUnlink(outputPath);
+      res.status(500).send("Video conversion failed");
+    })
+    .save(outputPath);
 });
 
+// video-compress
 
-// image conversion
+app.post("/compress-video", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("No file uploaded");
+
+  const inputPath = req.file.path;
+  const { quality = "medium" } = req.body;
+
+  const PRESETS = {
+    low: "-crf 23",
+    medium: "-crf 28",
+    high: "-crf 33",
+  };
+
+  const outputPath = `output/${ Date.now() }.mp4`;
+
+  ffmpeg(inputPath)
+    .outputOptions([
+      "-c:v libx264",
+      "-preset ultrafast",
+      "-vf scale=1280:-2",
+      "-movflags +faststart",
+      PRESETS[quality] || PRESETS.medium,
+    ])
+    .audioCodec("aac")
+    .toFormat("mp4")
+    .on("end", () => sendAndCleanup(res, inputPath, outputPath))
+    .on("error", (err) => {
+      console.error("Video compress error:", err.message);
+      safeUnlink(inputPath);
+      safeUnlink(outputPath);
+      res.status(500).send("Video compression failed");
+    })
+    .save(outputPath);
+});
+
+// image-convert
+
 app.post("/convert-image", upload.single("file"), async (req, res) => {
   const inputPath = req.file.path;
   const { format = "jpeg" } = req.body;
@@ -121,23 +136,20 @@ app.post("/convert-image", upload.single("file"), async (req, res) => {
     return res.status(400).send("Unsupported image format");
   }
 
-  const outputPath = `output/${Date.now()}.${format}`;
+  const outputPath = `output/${ Date.now() }.${ format }`;
 
   try {
-    let image = sharp(inputPath);
-    image = image[format]();
-    await image.toFile(outputPath);
-
+    await sharp(inputPath)[format]().toFile(outputPath);
     sendAndCleanup(res, inputPath, outputPath);
   } catch (err) {
-    console.error("Image conversion error:", err);
+    console.error("Image convert error:", err.message);
     safeUnlink(inputPath);
     res.status(500).send("Image conversion failed");
   }
 });
 
+// image-compress
 
-// image compression
 app.post("/compress-image", upload.single("file"), async (req, res) => {
   const inputPath = req.file.path;
   const { format = "jpeg", quality = 70 } = req.body;
@@ -147,26 +159,27 @@ app.post("/compress-image", upload.single("file"), async (req, res) => {
     return res.status(400).send("Unsupported image format");
   }
 
-  const outputPath = `output/${Date.now()}.${format}`;
+  const outputPath = `output/${ Date.now() }.${ format }`;
 
   try {
-    let image = sharp(inputPath);
+    let img = sharp(inputPath);
 
-    if (format === "jpeg") image = image.jpeg({ quality });
-    else if (format === "png") image = image.png({ quality });
-    else image = image[format]();
+    if (format === "jpeg") img = img.jpeg({ quality });
+    else if (format === "png") img = img.png({ quality });
+    else img = img[format]();
 
-    await image.toFile(outputPath);
+    await img.toFile(outputPath);
     sendAndCleanup(res, inputPath, outputPath);
   } catch (err) {
-    console.error("Image compression error:", err);
+    console.error("Image compress error:", err.message);
     safeUnlink(inputPath);
     res.status(500).send("Image compression failed");
   }
 });
 
+// server
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Formatix backend running on http://localhost:${PORT}`);
+  console.log(`Formatix backend running on port ${ PORT }`);
 });
