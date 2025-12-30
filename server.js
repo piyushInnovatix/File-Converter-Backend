@@ -65,6 +65,11 @@ const VIDEO_FORMAT_CONFIG = {
 };
 
 app.post("/convert-video", upload.single("file"), (req, res) => {
+  // Validate file upload
+  if (!req.file) {
+    return res.status(400).send("No file uploaded");
+  }
+
   const inputPath = req.file.path;
   const { format = "mp4" } = req.body;
 
@@ -76,21 +81,33 @@ app.post("/convert-video", upload.single("file"), (req, res) => {
 
   const outputPath = `output/${Date.now()}.${format}`;
 
-  let command = ffmpeg(inputPath).outputOptions(config.options);
+  try {
+    let command = ffmpeg(inputPath);
 
-  if (!config.audio) {
-    command = command.noAudio();
+    // Add output options
+    config.options.forEach(option => {
+      command = command.addOutputOption(option);
+    });
+
+    if (!config.audio) {
+      command = command.noAudio();
+    }
+
+    command
+      .toFormat(config.format)
+      .on("end", () => sendAndCleanup(res, inputPath, outputPath))
+      .on("error", (err) => {
+        console.error("Video conversion error:", err.message);
+        safeUnlink(inputPath);
+        safeUnlink(outputPath);
+        res.status(500).send("Video conversion failed");
+      })
+      .save(outputPath);
+  } catch (err) {
+    console.error("Video conversion error:", err.message);
+    safeUnlink(inputPath);
+    res.status(500).send("Video conversion failed");
   }
-
-  command
-    .toFormat(config.format)
-    .on("end", () => sendAndCleanup(res, inputPath, outputPath))
-    .on("error", (err) => {
-      console.error("Video conversion error:", err.message);
-      safeUnlink(inputPath);
-      res.status(500).send("Video conversion failed");
-    })
-    .save(outputPath);
 });
 
 
@@ -149,7 +166,7 @@ app.post("/compress-image", upload.single("file"), async (req, res) => {
 });
 
 
-const PORT = process.env.PORT || 5000;
+const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`Formatix backend running on http://localhost:${PORT}`);
 });
