@@ -98,9 +98,9 @@ app.post("/compress-video", upload.single("file"), (req, res) => {
   const { quality = "medium" } = req.body;
 
   const PRESETS = {
-    low: "-crf 23",
+    high: "-crf 23",
     medium: "-crf 28",
-    high: "-crf 33",
+    low: "-crf 33",
   };
 
   const outputPath = `output/${ Date.now() }.mp4`;
@@ -152,7 +152,15 @@ app.post("/convert-image", upload.single("file"), async (req, res) => {
 
 app.post("/compress-image", upload.single("file"), async (req, res) => {
   const inputPath = req.file.path;
-  const { format = "jpeg", quality = 70 } = req.body;
+  const { format = "jpeg", quality = "medium" } = req.body;
+
+  const quality_map = {
+    high: 90,
+    medium: 70,
+    low: 50
+  }
+
+  const qualityValue = quality_map[quality] || 70;
 
   if (!IMAGE_FORMATS.includes(format)) {
     safeUnlink(inputPath);
@@ -164,8 +172,8 @@ app.post("/compress-image", upload.single("file"), async (req, res) => {
   try {
     let img = sharp(inputPath);
 
-    if (format === "jpeg") img = img.jpeg({ quality });
-    else if (format === "png") img = img.png({ quality });
+    if (format === "jpeg") img = img.jpeg({ quality: qualityValue });
+    else if (format === "png") img = img.png({ quality: qualityValue });
     else img = img[format]();
 
     await img.toFile(outputPath);
