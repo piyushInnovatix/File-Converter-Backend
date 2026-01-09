@@ -3,7 +3,7 @@ const fs = require("fs");
 const cors = require("cors");
 const path = require("path");
 
-const imageRoutes = require("./routes/image.routes");
+const imageRoutes = require("./src/routes/image.routes");
 
 const app = express();
 app.use(cors());
